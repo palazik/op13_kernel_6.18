@@ -389,6 +389,7 @@ if ! grep -q 'op13_deadline' $PA; then
 
 /* op13: see tools/prep_common.sh */
 #include <linux/sched/signal.h>
+#include <linux/sizes.h>
 #include <linux/workqueue.h>
 
 static unsigned int op13_deadline;
@@ -430,6 +431,50 @@ static void op13_show_boot_tasks(void)
 	rcu_read_unlock();
 }
 
+/* this boot's kernel errors so far, again: pstore's console keeps the start of the boot (its
+ * pinned part) and the end, and the middle -- where the drivers load and fail -- is overwritten
+ * by then (test-65: why the display never came up was in no log). The kernel's log buffer still
+ * has all of it. The kernel's own lines only (user space's /dev/kmsg lines are a facility of their
+ * own), error level or worse, and warnings about symbols or probes (a module refused for a symbol,
+ * a probe that failed); at most 64 KiB, the earliest first: the first failure is the one that
+ * matters. Only what was logged before this dump, so no dump replays an earlier one. */
+static void op13_replay_errors(void)
+{
+	static char line[1024];
+	struct kmsg_dump_iter iter;
+	unsigned int n = 0, over = 0;
+	size_t len, out = 0;
+	u64 stop;
+
+	kmsg_dump_rewind(&iter);
+	stop = iter.next_seq;
+	pr_emerg("op13: this boot's kernel errors so far:\n");
+	while (iter.cur_seq < stop && kmsg_dump_get_line(&iter, true, line, sizeof(line) - 1, &len)) {
+		unsigned int prio = 0, i = 1;
+
+		line[len] = '\0';
+		if (line[0] != '<')
+			continue;
+		while (line[i] >= '0' && line[i] <= '9')
+			prio = prio * 10 + (line[i++] - '0');
+		if (prio > 7)		/* not the kernel's (LOG_KERN is facility 0) */
+			continue;
+		if (prio > 4 || (prio == 4 && !strstr(line, "symbol") && !strstr(line, "probe")
+				 && !strstr(line, "fail") && !strstr(line, "error")))
+			continue;
+		if (strstr(line, "op13") || strstr(line, "blocked for more than"))
+			continue;
+		if (out + len > SZ_64K) {
+			over++;
+			continue;
+		}
+		out += len;
+		n++;
+		pr_emerg("op13| %s", line + i + 1);
+	}
+	pr_emerg("op13: %u error lines replayed, %u more past 64 KiB\n", n, over);
+}
+
 static unsigned int op13_deadline_runs;
 
 static void op13_deadline_fn(struct work_struct *work)
@@ -439,8 +484,9 @@ static void op13_deadline_fn(struct work_struct *work)
 		return;
 	}
 	console_verbose();	/* the task dump is KERN_INFO: past the bootloader's loglevel */
-	pr_emerg("op13: no zygote %u s into the boot: blocked tasks and CPUs follow\n",
+	pr_emerg("op13: no zygote %u s into the boot: its errors, blocked tasks and CPUs follow\n",
 		 op13_deadline + 60 * op13_deadline_runs);
+	op13_replay_errors();
 	show_state_filter(TASK_UNINTERRUPTIBLE);
 	op13_show_boot_tasks();
 	trigger_all_cpu_backtrace();
