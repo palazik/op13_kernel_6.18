@@ -7,7 +7,8 @@ copy of the OnePlus 13's tree (the generic 6.6 -> 6.18 sweeps are applied there 
 1. The kernel API changes of 6.7 .. 6.13 this 6.6-era release meets, ported from Qualcomm's own
    handling of them in the OnePlus 15's release of the same driver (its 6.12 tree): the DRM fields
    that went away (output_poll_changed, lastclose -- now run from postclose on the last close, as
-   there --, date), iommu_present() (gone in 6.13: whether a platform device sits behind an IOMMU,
+   there --, date), the file operations' FOP_UNSIGNED_OFFSET (6.12: drm_open() refuses a device
+   without it), iommu_present() (gone in 6.13: whether a platform device sits behind an IOMMU,
    as there), the DP MST payload helper's 6.10 arguments, of_property_for_each_u32()'s 6.11 ones,
    vmap()'s header, and the void platform remove() the sweeps gave its definition but not its
    prototype.
@@ -65,6 +66,15 @@ EDITS = [
     ("msm/msm_drv.c", "\t.date               = \"20130625\",\n",
      "#if (KERNEL_VERSION(6, 13, 0) > LINUX_VERSION_CODE)\n"
      "\t.date               = \"20130625\",\n#endif\n"),
+    # drm_open() refuses (-EINVAL, a WARN once) a DRM device whose file operations do not say their
+    # offsets are unsigned (6.12: FOP_UNSIGNED_OFFSET instead of the FMODE flag drm_open set itself),
+    # as Qualcomm's 6.12 release has it. Without it /dev/dri/card0 is there and no one can open it:
+    # the composer's "Failed to acquire DRMMaster instance 0", no SurfaceFlinger (test-65)
+    ("msm/msm_drv.c",
+     "static const struct file_operations fops = {\n\t.owner              = THIS_MODULE,\n",
+     "static const struct file_operations fops = {\n\t.owner              = THIS_MODULE,\n"
+     "#if (KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE)\n"
+     "\t.fop_flags          = FOP_UNSIGNED_OFFSET,\n#endif\n"),
     # vmap()
     ("msm/msm_gem.c", "#include <linux/spinlock.h>\n",
      "#include <linux/spinlock.h>\n#include <linux/vmalloc.h>\n"),
