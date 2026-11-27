@@ -112,6 +112,13 @@ jobs:
         continue-on-error: true
         run: bash scripts/build_vendor.sh
 
+      # msm_drm from the OnePlus 13's own display sources with OnePlus' display extension: it links
+      # against OnePlus' modules, so after them; build_tp.sh's OnePlus 15 one stays if it fails
+      - name: Display driver (the OnePlus 13's, with OnePlus' extension)
+        id: display
+        continue-on-error: true
+        run: bash scripts/build_display.sh
+
       - name: Boot image
         id: bootimg
         continue-on-error: true
@@ -144,6 +151,7 @@ jobs:
           cp -r out/vendor-log dist/logs/ 2>/dev/null || true
           mkdir -p dist/walt && cp out/waltmods/*.ko dist/walt/ 2>/dev/null || true
           cp -r out/walt-log dist/logs/ 2>/dev/null || true
+          cp -r out/display-log dist/logs/ 2>/dev/null && rm -f dist/logs/display-log/*.ko || true
           cp out/vendor/modules.json out/vendor/plan.txt dist/logs/ 2>/dev/null || true
           cp -r out/boot/full dist/logs/full-lists 2>/dev/null || true
           cp out/*.log out/*.txt dist/logs/ 2>/dev/null || true
