@@ -39,5 +39,6 @@ top -b -H -d 5 -n 2 -m 30
 echo "== wakeup sources (active or busiest)"
 for w in /sys/class/wakeup/wakeup*; do echo "$(cat $w/name) active=$(cat $w/active_time_ms) total=$(cat $w/total_time_ms) count=$(cat $w/active_count)"; done |
 	sort -t= -k3 -rn | head -20
-echo "== kernel errors"
-dmesg -l err,crit,alert,emerg 2>/dev/null | tail -60
+echo "== kernel errors and failed suspends"
+# (toybox's dmesg has no level filter: by the text)
+dmesg 2>&1 | grep -iE 'error|fail|abort|PM: (suspend|Some devices|Wakeup pending)|wakeup.*(pending|irq)' | tail -80
