@@ -72,6 +72,90 @@ EDITS = [
     ("zram_drv.c",
      "\t/* zram devices sort of resembles non-rotational disks */\n\tblk_queue_flag_set(QUEUE_FLAG_NONROT, zram->disk->queue);\n\tblk_queue_flag_set(QUEUE_FLAG_SYNCHRONOUS, zram->disk->queue);\n\n\t/*\n\t * To ensure that we always get PAGE_SIZE aligned\n\t * and n*PAGE_SIZED sized I/O requests.\n\t */\n\tblk_queue_physical_block_size(zram->disk->queue, PAGE_SIZE);\n\tblk_queue_logical_block_size(zram->disk->queue,\n\t\t\t\t\tZRAM_LOGICAL_BLOCK_SIZE);\n\tblk_queue_io_min(zram->disk->queue, PAGE_SIZE);\n\tblk_queue_io_opt(zram->disk->queue, PAGE_SIZE);\n\tzram->disk->queue->limits.discard_granularity = PAGE_SIZE;\n\tblk_queue_max_discard_sectors(zram->disk->queue, UINT_MAX);\n\n\t/*\n\t * zram_bio_discard() will clear all logical blocks if logical block\n\t * size is identical with physical block size(PAGE_SIZE). But if it is\n\t * different, we will skip discarding some parts of logical blocks in\n\t * the part of the request range which isn't aligned to physical block\n\t * size.  So we can't ensure that all discarded logical blocks are\n\t * zeroed.\n\t */\n\tif (ZRAM_LOGICAL_BLOCK_SIZE == PAGE_SIZE)\n\t\tblk_queue_max_write_zeroes_sectors(zram->disk->queue, UINT_MAX);\n\n\tblk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, zram->disk->queue);\n",
      '\t/* op13: non-rotational is the default, the rest is in lim above (blk_alloc_disk) */\n'),
+    # hybridswap's zram on the kernel's own zsmalloc, not OnePlus' copy of 6.6's (oplus_bsp_zsmalloc,
+    # 6.6's mm/zsmalloc.c with its functions renamed *_oplus and nothing else): 6.18 tells a
+    # zsmalloc page by its page type and moves it (compaction, CMA) with the kernel zsmalloc's
+    # movable operations (6.17), which a second copy in a module cannot have -- the copy no longer
+    # builds (page->index, __ClearPageMovable gone) and could only keep its pages unmovable. The same
+    # calls under OnePlus' names, but the object mappings (zs_map_object/zs_unmap_object, gone in
+    # 6.16) become reads and writes as the kernel's zram does them: zs_obj_read_begin/end with a
+    # buffer for an object across two pages (a compression stream's, as zram's local_copy),
+    # zs_obj_write. scripts/vendor_kbuild.py leaves oplus_bsp_zsmalloc out of the build.
+    ("hybridswap_zram/zram_drv.h", '#include "../thp_zsmalloc/zsmalloc.h"\n',
+     "/* op13: the kernel's zsmalloc under OnePlus' names (scripts/oplus_fix.py) */\n"
+     "#include <linux/zsmalloc.h>\n"
+     "#define zs_create_pool_oplus\t\tzs_create_pool\n#define zs_destroy_pool_oplus\t\tzs_destroy_pool\n"
+     "#define zs_free_oplus\t\t\tzs_free\n#define zs_huge_class_size_oplus\tzs_huge_class_size\n"
+     "#define zs_get_total_pages_oplus\tzs_get_total_pages\n#define zs_compact_oplus\t\tzs_compact\n"
+     "#define zs_lookup_class_index_oplus\tzs_lookup_class_index\n#define zs_pool_stats_oplus\t\tzs_pool_stats\n"
+     "static inline unsigned long zs_malloc_oplus(struct zs_pool *pool, size_t size, gfp_t gfp)\n"
+     "{\n\treturn zs_malloc(pool, size, gfp, NUMA_NO_NODE);\n}\n"),
+    ("hybridswap/internal.h", '#include "thp_zsmalloc/zsmalloc.h"\n',
+     "#include <linux/zsmalloc.h>\t/* op13: the kernel's (scripts/oplus_fix.py) */\n"),
+    # reading an object: an incompressible one (PAGE_SIZE) fills a page of its own, never across two
+    # (zram's read_incompressible_page passes no buffer either); a compressed one may be, into the
+    # decompression stream's buffer, which decompression does not use
+    ("hybridswap_zram/zram_drv.c",
+     "\tsrc = zs_map_object_oplus(zram->mem_pool, handle, ZS_MM_RO);\n\tif (size == PAGE_SIZE) {\n"
+     "\t\tdst = kmap_atomic(page);\n\t\tmemcpy(dst, src, PAGE_SIZE);\n\t\tkunmap_atomic(dst);\n\t\tret = 0;\n"
+     "\t} else {\n\t\tdst = kmap_atomic(page);\n\t\tret = zcomp_decompress(zstrm, src, size, dst);\n"
+     "\t\tkunmap_atomic(dst);\n\t\tzcomp_stream_put(zram->comps[prio]);\n\t}\n"
+     "\tzs_unmap_object_oplus(zram->mem_pool, handle);\n\treturn ret;\n",
+     "\t/* op13: zs_obj_read_begin/end (6.16+), as the kernel's zram (scripts/oplus_fix.py) */\n"
+     "\tsrc = zs_obj_read_begin(zram->mem_pool, handle, size == PAGE_SIZE ? NULL : zstrm->buffer);\n"
+     "\tif (size == PAGE_SIZE) {\n"
+     "\t\tdst = kmap_atomic(page);\n\t\tmemcpy(dst, src, PAGE_SIZE);\n\t\tkunmap_atomic(dst);\n\t\tret = 0;\n"
+     "\t\tzs_obj_read_end(zram->mem_pool, handle, src);\n"
+     "\t} else {\n\t\tdst = kmap_atomic(page);\n\t\tret = zcomp_decompress(zstrm, src, size, dst);\n"
+     "\t\tkunmap_atomic(dst);\n\t\tzs_obj_read_end(zram->mem_pool, handle, src);\n"
+     "\t\tzcomp_stream_put(zram->comps[prio]);\n\t}\n\treturn ret;\n"),
+    # writing one: zs_obj_write() of the compressed buffer, or of the page itself
+    ("hybridswap_zram/zram_drv.c",
+     "\tdst = zs_map_object_oplus(zram->mem_pool, handle, ZS_MM_WO);\n\n\tsrc = zstrm->buffer;\n"
+     "\tif (comp_len == PAGE_SIZE)\n\t\tsrc = kmap_atomic(page);\n\tmemcpy(dst, src, comp_len);\n"
+     "\tif (comp_len == PAGE_SIZE)\n\t\tkunmap_atomic(src);\n\n"
+     "\tzcomp_stream_put(zram->comps[ZRAM_PRIMARY_COMP]);\n\tzs_unmap_object_oplus(zram->mem_pool, handle);\n",
+     "\t/* op13: zs_obj_write (6.16+), as the kernel's zram (scripts/oplus_fix.py) */\n\tsrc = zstrm->buffer;\n"
+     "\tif (comp_len == PAGE_SIZE)\n\t\tsrc = kmap_local_page(page);\n"
+     "\tzs_obj_write(zram->mem_pool, handle, src, comp_len);\n"
+     "\tif (comp_len == PAGE_SIZE)\n\t\tkunmap_local(src);\n\n"
+     "\tzcomp_stream_put(zram->comps[ZRAM_PRIMARY_COMP]);\n"),
+    ("hybridswap_zram/zram_drv.c", "\tvoid *src, *dst, *mem;\n", "\tvoid *src, *mem;\t/* op13 */\n"),
+    ("hybridswap_zram/zram_drv.c",
+     "\tdst = zs_map_object_oplus(zram->mem_pool, handle_new, ZS_MM_WO);\n"
+     "\tmemcpy(dst, zstrm->buffer, comp_len_new);\n\tzcomp_stream_put(zram->comps[prio]);\n\n"
+     "\tzs_unmap_object_oplus(zram->mem_pool, handle_new);\n",
+     "\tzs_obj_write(zram->mem_pool, handle_new, zstrm->buffer, comp_len_new);\t/* op13: 6.16+ */\n"
+     "\tzcomp_stream_put(zram->comps[prio]);\n"),
+    ("hybridswap_zram/zram_drv.c", "\tu32 num_recomps = 0;\n\tvoid *src, *dst;\n",
+     "\tu32 num_recomps = 0;\n\tvoid *src;\t/* op13 */\n"),
+    # hybridswap moving an object back from its extent into zram: gathered from the extent's pages
+    # into a stream's buffer, then written; zs_malloc() fails with an error value, not 0 (OnePlus'
+    # check let a failed allocation through as a handle)
+    ("hybridswap/hybridswap.c", "\tint size, i;\n\tu8 *dst = NULL;\n",
+     "\tint size, i;\n\tstruct zcomp_strm *zstrm;\t/* op13 */\n"),
+    ("hybridswap/hybridswap.c",
+     "\tif (!handle) {\n\t\tlog_err(\"alloc handle failed, size = %d\\n\", size);\n\t\treturn -ENOMEM;\n\t}\n"
+     "\tdst = zs_map_object_oplus(zram->mem_pool, handle, ZS_MM_WO);\n"
+     "\tcopy_from_pages(dst, io_ext->pages, eswpentry, size);\n\tzs_unmap_object_oplus(zram->mem_pool, handle);\n",
+     "\tif (IS_ERR_VALUE(handle)) {\t/* op13: an error value, not 0 */\n"
+     "\t\tlog_err(\"alloc handle failed, size = %d\\n\", size);\n\t\treturn -ENOMEM;\n\t}\n"
+     "\t/* op13: zs_obj_write (6.16+), through a stream's buffer (scripts/oplus_fix.py) */\n"
+     "\tzstrm = zcomp_stream_get(zram->comps[ZRAM_PRIMARY_COMP]);\n"
+     "\tcopy_from_pages(zstrm->buffer, io_ext->pages, eswpentry, size);\n"
+     "\tzs_obj_write(zram->mem_pool, handle, zstrm->buffer, size);\n"
+     "\tzcomp_stream_put(zram->comps[ZRAM_PRIMARY_COMP]);\n"),
+    # ... and one going out to its extent: read as zram reads it
+    ("hybridswap/hybridswap.c", "\tunsigned long handle;\n\tint size;\n\tu8 *src = NULL;\n",
+     "\tunsigned long handle;\n\tint size;\n\tu8 *src = NULL;\n\tstruct zcomp_strm *zstrm;\t/* op13 */\n"),
+    ("hybridswap/hybridswap.c",
+     "\tsrc = zs_map_object_oplus(zram->mem_pool, handle, ZS_MM_RO);\n"
+     "\tcopy_to_pages(src, io_ext->pages, ext_off, size);\n\tzs_unmap_object_oplus(zram->mem_pool, handle);\n",
+     "\t/* op13: zs_obj_read_begin/end (6.16+), a stream's buffer for an object across two pages */\n"
+     "\tzstrm = zcomp_stream_get(zram->comps[ZRAM_PRIMARY_COMP]);\n"
+     "\tsrc = zs_obj_read_begin(zram->mem_pool, handle, zstrm->buffer);\n"
+     "\tcopy_to_pages(src, io_ext->pages, ext_off, size);\n\tzs_obj_read_end(zram->mem_pool, handle, src);\n"
+     "\tzcomp_stream_put(zram->comps[ZRAM_PRIMARY_COMP]);\n"),
     # hybridswap's hybridmain.c: the same copied 6.6 memcg_vmstats_percpu as exit_mm_optimize (its
     # memcg_page_state_local read swap usage through it) -> the exported memcg_page_state(); and
     # the 6.6 hook android_vh_alloc_pages_slowpath(gfp, order, alloc_start), which 6.18 split into

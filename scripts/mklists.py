@@ -37,6 +37,13 @@ LATE = ["oplus_bsp_synaptics_tcm2"]
 # own included, for good (test-55: the first stage stuck, a kworker in cnss_pci_init ->
 # pci_unregister_driver -> async_synchronize_full). Stock loads it without the option.
 SYNC = {"cnss2"}
+# AFTER: a module loaded after another, whatever list the phone has either in. The kernel's zram and
+# OnePlus' hybridswap zram (its own zram driver) claim the same CPU hotplug state and zram-control
+# class: the first to load is the phone's zram, the other one's init gives up. The phone has
+# hybridswap's first (vendor_dlkm before system_dlkm); in our batch it is a new driver, loaded late,
+# so the kernel's would win and leave ColorOS without hybridswap. After it, the kernel's zram is
+# there only if hybridswap's did not load.
+AFTER = {"zram": "oplus_bsp_hybridswap_zram"}
 # the new list (optional, one module name a line): every driver scripts/build_vendor.sh brought over
 # from OnePlus' 6.6 sources. They are LATE too, also those the phone loads in its first stage (they
 # move to the end of the batch), and each gets async_probe=1 in modules.options: its probes run in
@@ -127,6 +134,15 @@ def main(argv):
             place(m)
     for m in late:
         place(m)
+    for name, before in AFTER.items():
+        pos = {canon(m): i for i, m in enumerate(ordered)}
+        if name in pos and before in pos and pos[name] < pos[before]:
+            m = ordered.pop(pos[name])
+            # nothing in between may need it (it would load before its dependency)
+            if any(m in deps.get(x, []) for x in ordered[pos[name]:pos[before]]):
+                ordered.insert(pos[name], m)
+            else:
+                ordered.insert(pos[before], m)	# right after it (one place up since the pop)
 
     init_list = first + ["k618_load.ko"]
     for name in ("modules.load", "modules.load.recovery", "modules.load.charger"):

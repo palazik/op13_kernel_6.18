@@ -154,6 +154,10 @@ prepare() {
 	lnk ufs_trace_types.h "$C/drivers/ufs/core/ufs_trace_types.h"
 	lnk pinctrl-msm.h "$S/drivers/pinctrl/qcom/pinctrl-msm.h"
 	lnk trace/events/ufs_trace_types.h "$C/drivers/ufs/core/ufs_trace_types.h"
+	# zsmalloc is the kernel's (GKI's zsmalloc.ko): its 6.18 header, not the SoC repo's copy of
+	# 6.12's (include/linux/zsmalloc.h there, ahead of the kernel's: zs_map_object, 3-argument
+	# zs_malloc), which hybridswap's zram calls into (scripts/oplus_fix.py)
+	lnk linux/zsmalloc.h "$C/include/linux/zsmalloc.h"
 	# OnePlus' cpu tree as its kernel has it (kernel/oplus_cpu): includes of "../kernel/oplus_cpu/..."
 	# resolve from the include directory above
 	mkdir -p "$P/kernel" && ln -sfn "$K/cpu" "$P/kernel/oplus_cpu"

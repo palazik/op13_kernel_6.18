@@ -36,3 +36,6 @@ tms_device_modules
 usb_f_rndis
 # drm_dp_aux_bus: nothing the phone loads depends on it (no DisplayPort panel on its AUX bus)
 drm_dp_aux_bus
+# oplus_bsp_zsmalloc: OnePlus' copy of 6.6's mm/zsmalloc.c (its functions renamed *_oplus);
+# hybridswap's zram uses the kernel's own zsmalloc instead (scripts/oplus_fix.py, vendor_kbuild.py)
+oplus_bsp_zsmalloc

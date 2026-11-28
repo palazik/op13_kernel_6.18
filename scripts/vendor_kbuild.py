@@ -54,6 +54,16 @@ for m in mods:
 	if norm(m["out"]) in ALIAS:
 		m["out"] = ALIAS[norm(m["out"])] + ".ko"
 
+# OnePlus modules not built because the kernel has what they are for: out of the plan, and out of
+# the dependencies of the modules that name them. oplus_bsp_zsmalloc is 6.6's mm/zsmalloc.c with its
+# functions renamed; hybridswap's zram uses the kernel's own zsmalloc (scripts/oplus_fix.py)
+REPLACED = {"oplus_bsp_zsmalloc"}
+gone = {"%s:%s" % (m["package"], m["name"]) for m in mods if norm(m["out"]) in REPLACED}
+mods = [m for m in mods if norm(m["out"]) not in REPLACED]
+for m in mods:
+	m["deps"] = [x for x in m["deps"] if x not in gone]
+wanted -= REPLACED
+
 by_label = {"%s:%s" % (m["package"], m["name"]): m for m in mods}
 by_out = {}
 for m in mods:
